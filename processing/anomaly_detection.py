@@ -1,29 +1,17 @@
-from pyspark.sql import DataFrame
-from pyspark.sql.functions import lag, abs as spark_abs, col
-from pyspark.sql.window import Window
-
-
-def detect_anomaly(df: DataFrame, threshold: float = 3.0) -> DataFrame:
+def calculate_change_rate(current_close: float, prev_close: float) -> float:
     """
-    직전 분봉 대비 가격 변동률이 threshold(%) 이상이면 이상 신호 발생
+    직전 분봉 대비 현재 분봉의 가격 변동률(%) 계산
 
-    threshold 기본값 = 3.0 (3% 이상 급등/급락)
+    이전 코드의 문제:
+    - Spark Window + lag()는 정적 DataFrame 전용
+    - Structured Streaming에서는 "이전 행"이 메모리에 없어서 동작 불가
+    → foreachBatch 안에서 PostgreSQL에 직전 분봉을 직접 조회해서 해결
     """
+    if prev_close is None or prev_close == 0:
+        return 0.0
+    return (current_close - prev_close) / prev_close * 100
 
-    # 코인별로 시간 순서대로 정렬
-    window_spec = Window.partitionBy("code").orderBy("window")
 
-    return df \
-        .withColumn(
-            "prev_close",
-            lag("close", 1).over(window_spec)       # 직전 분봉 종가
-        ) \
-        .withColumn(
-            "change_rate",
-            (col("close") - col("prev_close"))
-            / col("prev_close") * 100               # 변동률 (%)
-        ) \
-        .withColumn(
-            "is_anomaly",
-            spark_abs(col("change_rate")) >= threshold  # 3% 이상이면 True
-        )
+def is_anomaly(change_rate: float, threshold: float = 3.0) -> bool:
+    """변동률 절댓값이 threshold 이상이면 이상 신호"""
+    return abs(change_rate) >= threshold

@@ -14,6 +14,8 @@
   Spark Streaming (1분봉 집계)
       ↓
   PostgreSQL (ohlcv 테이블)
+      ↓
+  이상 탐지 → 텔레그램 알람
 ```
 
 ---
@@ -22,8 +24,9 @@
 
 - **Kafka** : 실시간 체결 데이터 수집 및 버퍼링
 - **PySpark** : 스트리밍 데이터 집계 (Structured Streaming)
-- **PostgreSQL** : 1분봉 OHLCV 저장
+- **PostgreSQL** : 1분봉 OHLCV 저장, 이상 탐지 로그 저장
 - **Docker** : Kafka, PostgreSQL 컨테이너 실행
+- **텔레그램 Bot** : 이상 탐지 실시간 알람
 
 ---
 
@@ -36,9 +39,9 @@ coin-pipeline/
 │   ├── kafka_config.py        # Kafka 설정 (브로커 주소, 토픽, 코인 목록)
 │   └── requirements.txt
 ├── processing/
-│   ├── spark_streaming_job.py # Spark 스트리밍 메인 실행 파일
+│   ├── spark_streaming_job.py # Spark 스트리밍 메인 실행 파일 (이상 탐지 + 텔레그램 포함)
 │   ├── window_aggregation.py  # 1분봉 OHLCV 집계 로직
-│   ├── anomaly_detection.py   # 이상 탐지 (개발 중)
+│   ├── anomaly_detection.py   # 이상 탐지 유틸 함수
 │   ├── schemas.py             # Kafka 메시지 스키마 정의
 │   └── requirements.txt
 ├── db/
@@ -70,10 +73,20 @@ cd processing
 python spark_streaming_job.py
 ```
 
-### 4. 데이터 확인
+### 4. 텔레그램 봇 설정 (선택)
+
+이상 탐지 알람을 받으려면 환경변수를 설정해야 함. 없으면 알람 없이 정상 동작.
+
+```bash
+export TELEGRAM_BOT_TOKEN=your_token
+export TELEGRAM_CHAT_ID=your_chat_id
+```
+
+### 5. 데이터 확인
 
 ```bash
 docker exec -it postgres psql -U postgres -d coindb -c "SELECT * FROM ohlcv LIMIT 10;"
+docker exec -it postgres psql -U postgres -d coindb -c "SELECT * FROM anomaly_log LIMIT 10;"
 ```
 
 ---
@@ -225,3 +238,35 @@ PostgreSQL 이미지는 `/docker-entrypoint-initdb.d/` 폴더의 SQL 파일을 *
 docker compose down -v
 docker compose up -d
 ```
+
+---
+
+### 7. Streaming에서 lag()로 이상 탐지 불가
+
+**문제**
+
+Spark `Window + lag()`로 직전 분봉 종가를 참조하려 했으나 동작하지 않음.
+
+**원인**
+
+`lag()`는 정적 DataFrame 전용 함수임. Structured Streaming은 데이터가 배치 단위로 쪼개져서 들어오기 때문에, 배치가 실행될 때 이전 배치의 데이터는 메모리에 없음. 따라서 배치 경계를 넘는 이전 행 참조가 불가능함.
+
+**해결**
+
+`anomaly_detection.py`에서 Spark 의존성을 완전히 제거하고, 순수 Python 유틸 함수 2개로 재작성.
+
+```python
+def calculate_change_rate(current_close, prev_close): ...
+def is_anomaly(change_rate, threshold=3.0): ...
+```
+
+직전 분봉은 `foreachBatch` 안에서 PostgreSQL에 직접 조회해서 가져옴. 어차피 직전 분봉은 이미 DB에 저장되어 있기 때문에 별도 state 관리 없이 해결 가능.
+
+```sql
+SELECT close FROM ohlcv
+WHERE code = %s AND window_start < %s
+ORDER BY window_start DESC
+LIMIT 1
+```
+
+이상 탐지 로직을 별도 프로세스로 분리하지 않고 `foreachBatch` 안에 통합한 이유는, 분리할 경우 폴링 주기 관리 / 중복 탐지 방지 / 프로세스 동기화 문제가 생기기 때문임. 이 규모에서는 `foreachBatch` 안에서 저장 직후 바로 처리하는 것이 더 단순하고 안전함.

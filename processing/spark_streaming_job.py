@@ -1,11 +1,49 @@
+import logging
 import os
+
 import psycopg2
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import from_json, col, from_unixtime
+from pyspark.sql.functions import col, from_json, from_unixtime
 
+from anomaly_detection import calculate_change_rate, is_anomaly
 from schemas import TRADE_SCHEMA
 from window_aggregation import aggregate_ohlcv
-from anomaly_detection import detect_anomaly
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+
+# 텔레그램 봇 설정 (환경변수로 관리 — 코드에 직접 넣지 말 것)
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID", "")
+
+
+def send_telegram_alert(code: str, close: float, change_rate: float) -> None:
+    """
+    이상 탐지 시 텔레그램 메시지 전송
+
+    토큰/chat_id가 없으면 조용히 스킵 (개발 환경 배려)
+    """
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        logging.warning("[텔레그램] 토큰 또는 chat_id 미설정 — 전송 스킵")
+        return
+
+    import urllib.request  # 외부 라이브러리 없이 표준 라이브러리만 사용
+    import urllib.parse
+
+    direction = "🚀 급등" if change_rate > 0 else "📉 급락"
+    message = (
+        f"[이상 탐지] {code}\n"
+        f"{direction} {change_rate:+.2f}%\n"
+        f"현재가: {close:,.0f}원"
+    )
+
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    data = urllib.parse.urlencode({
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text":    message,
+    }).encode()
+
+    req = urllib.request.Request(url, data=data)
+    urllib.request.urlopen(req, timeout=5)
 
 # ── 환경 설정 ──────────────────────────────────────────────
 os.environ["HADOOP_HOME"] = "C:/hadoop"
@@ -98,11 +136,15 @@ def main():
     # 5. 이상탐지
     #result_df = detect_anomaly(ohlcv_df)
 
-    # 6. PostgreSQL upsert 저장
+    # 6. PostgreSQL upsert + 이상 탐지 + 텔레그램 알람
     def write_to_postgres(batch_df, batch_id):
         """
-        1분마다 완성된 배치를 PostgreSQL에 upsert하는 함수.
-        (code + window_start) 조합이 이미 있으면 UPDATE, 없으면 INSERT.
+        Spark가 1분봉을 완성할 때마다 호출되는 핸들러.
+        이 배치의 분봉을 저장한 직후, 같은 DB에서 직전 분봉을 조회해 이상 탐지.
+
+          1) ohlcv upsert → commit : 이 배치 분봉 저장 확정
+          2) 직전 분봉 조회 → 이상 탐지 → anomaly_log 저장
+          3) 텔레그램 전송 : 실패해도 저장에 영향 없음
         """
         rows = batch_df.select(
             col("code"),
@@ -114,7 +156,7 @@ def main():
             col("close"),
             col("volume"),
             col("trade_count"),
-        ).collect()  # Python 리스트로 변환
+        ).collect()
 
         if not rows:
             return
@@ -122,6 +164,7 @@ def main():
         conn = psycopg2.connect(**PG_CONN)
         cur = conn.cursor()
 
+        # ── 1) ohlcv upsert ───────────────────────────────────────────────
         upsert_sql = """
             INSERT INTO ohlcv
                 (code, window_start, window_end, open, high, low, close, volume, trade_count)
@@ -129,24 +172,68 @@ def main():
                 (%s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (code, window_start)
             DO UPDATE SET
-                window_end   = EXCLUDED.window_end,
-                open         = EXCLUDED.open,
-                high         = EXCLUDED.high,
-                low          = EXCLUDED.low,
-                close        = EXCLUDED.close,
-                volume       = EXCLUDED.volume,
-                trade_count  = EXCLUDED.trade_count
+                window_end  = EXCLUDED.window_end,
+                open        = EXCLUDED.open,
+                high        = EXCLUDED.high,
+                low         = EXCLUDED.low,
+                close       = EXCLUDED.close,
+                volume      = EXCLUDED.volume,
+                trade_count = EXCLUDED.trade_count
         """
-
         cur.executemany(upsert_sql, [
             (r.code, r.window_start, r.window_end,
              r.open, r.high, r.low, r.close, r.volume, r.trade_count)
             for r in rows
         ])
+        conn.commit()  # 저장은 여기서 무조건 확정
+
+        # ── 2) 이상 탐지 + anomaly_log 저장 ──────────────────────────────
+        anomaly_sql = """
+            INSERT INTO anomaly_log
+                (code, window_start, window_end, open, high, low, close,
+                 volume, trade_count, prev_close, change_rate)
+            VALUES
+                (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """
+        # 직전 분봉 close를 DB에서 조회하는 쿼리
+        # window_start보다 이전 분봉 중 가장 최신 것을 가져옴
+        prev_close_sql = """
+            SELECT close FROM ohlcv
+            WHERE code = %s AND window_start < %s
+            ORDER BY window_start DESC
+            LIMIT 1
+        """
+
+        anomalies = []  # 텔레그램 전송용 버퍼
+
+        for r in rows:
+            cur.execute(prev_close_sql, (r.code, r.window_start))
+            result = cur.fetchone()
+            prev_close = result[0] if result else None  # 첫 번째 분봉이면 None
+
+            change_rate = calculate_change_rate(r.close, prev_close)
+
+            if is_anomaly(change_rate):
+                cur.execute(anomaly_sql, (
+                    r.code, r.window_start, r.window_end,
+                    r.open, r.high, r.low, r.close,
+                    r.volume, r.trade_count,
+                    prev_close, change_rate,
+                ))
+                anomalies.append((r.code, r.close, change_rate))
 
         conn.commit()
         cur.close()
         conn.close()
+
+        # ── 3) 텔레그램 알람 ─────────────────────────────────────────────
+        # DB 커밋 완료 후에 전송 → 텔레그램 실패가 저장에 영향 없음
+        for code, close, change_rate in anomalies:
+            try:
+                send_telegram_alert(code, close, change_rate)
+            except Exception as e:
+                # 알람 실패는 로그만 남기고 계속 진행
+                logging.error(f"[텔레그램 전송 실패] {code}: {e}")
 
     query = ohlcv_df \
         .writeStream \

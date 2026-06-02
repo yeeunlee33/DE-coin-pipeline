@@ -14,3 +14,19 @@ CREATE TABLE IF NOT EXISTS ohlcv (
     -- code + window_start 조합이 같으면 중복으로 판단
     UNIQUE (code, window_start)
 );
+
+CREATE TABLE IF NOT EXISTS anomaly_log (
+    id           SERIAL PRIMARY KEY,
+    code         VARCHAR(20)      NOT NULL,
+    window_start TIMESTAMP        NOT NULL,
+    window_end   TIMESTAMP        NOT NULL,
+    open         DOUBLE PRECISION NOT NULL,
+    high         DOUBLE PRECISION NOT NULL,
+    low          DOUBLE PRECISION NOT NULL,
+    close        DOUBLE PRECISION NOT NULL,
+    volume       DOUBLE PRECISION NOT NULL,
+    trade_count  BIGINT           NOT NULL,
+    prev_close   DOUBLE PRECISION NOT NULL,  -- 직전 분봉 종가
+    change_rate  DOUBLE PRECISION NOT NULL,  -- 변동률 (%)
+    detected_at  TIMESTAMP        DEFAULT NOW()
+);
