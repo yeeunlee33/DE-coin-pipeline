@@ -1,6 +1,7 @@
 # 코인 실시간 데이터 파이프라인
 
 업비트 실시간 체결 데이터를 Kafka로 수집하고, Spark Streaming으로 1분봉 OHLCV를 집계해 PostgreSQL에 저장하는 파이프라인입니다.
+이상 탐지 시 텔레그램 알람을 전송하고, Airflow로 코인별 임계값을 매일 재계산합니다.
 
 ---
 
@@ -11,11 +12,17 @@
       ↓
   Kafka (upbit-trades 토픽)
       ↓
-  Spark Streaming (1분봉 집계)
+  Spark Streaming (1분봉 집계 + 이상 탐지)
       ↓
-  PostgreSQL (ohlcv 테이블)
+  PostgreSQL
+  ├── ohlcv            (1분봉 데이터)
+  ├── anomaly_log      (이상 탐지 기록)
+  └── anomaly_threshold (Airflow가 매일 재계산한 임계값)
       ↓
-  이상 탐지 → 텔레그램 알람
+  Grafana (시각화) / 텔레그램 (실시간 알람)
+
+  Airflow (매일 자정)
+  └── ohlcv 7일치 분석 → 코인별 임계값 재계산 → anomaly_threshold 업데이트
 ```
 
 ---
@@ -25,7 +32,9 @@
 - **Kafka** : 실시간 체결 데이터 수집 및 버퍼링
 - **PySpark** : 스트리밍 데이터 집계 (Structured Streaming)
 - **PostgreSQL** : 1분봉 OHLCV 저장, 이상 탐지 로그 저장
-- **Docker** : Kafka, PostgreSQL 컨테이너 실행
+- **Airflow** : 코인별 이상 탐지 임계값 매일 재계산 (통계 기반)
+- **Grafana** : 실시간 분봉 시각화 대시보드
+- **Docker** : 전체 인프라 컨테이너 실행
 - **텔레그램 Bot** : 이상 탐지 실시간 알람
 
 ---
@@ -44,6 +53,9 @@ coin-pipeline/
 │   ├── anomaly_detection.py   # 이상 탐지 유틸 함수
 │   ├── schemas.py             # Kafka 메시지 스키마 정의
 │   └── requirements.txt
+├── airflow/
+│   └── dags/
+│       └── threshold_update_dag.py  # 코인별 임계값 매일 재계산 DAG
 ├── db/
 │   └── init.sql               # PostgreSQL 테이블 DDL
 └── docker-compose.yml
@@ -75,18 +87,31 @@ python spark_streaming_job.py
 
 ### 4. 텔레그램 봇 설정 (선택)
 
-이상 탐지 알람을 받으려면 환경변수를 설정해야 함. 없으면 알람 없이 정상 동작.
+이상 탐지 알람을 받으려면 `.env` 파일에 설정. 없으면 알람 없이 정상 동작.
 
-```bash
-export TELEGRAM_BOT_TOKEN=your_token
-export TELEGRAM_CHAT_ID=your_chat_id
+```dotenv
+telegram_token=your_token
+telegram_cht_id=your_chat_id
 ```
 
-### 5. 데이터 확인
+### 5. Airflow DAG 실행
+
+`localhost:8081` 접속 → admin/admin 로그인 → `threshold_update` DAG 수동 실행
+매일 자정 자동 실행되므로 이후에는 별도 조작 불필요.
+
+### 6. Grafana 대시보드
+
+`localhost:3000` 접속 → admin/admin 로그인 → PostgreSQL 데이터소스 연결 후 대시보드 생성
+
+### 7. 데이터 확인
 
 ```bash
+# 분봉 데이터
 docker exec -it postgres psql -U postgres -d coindb -c "SELECT * FROM ohlcv LIMIT 10;"
+# 이상 탐지 기록
 docker exec -it postgres psql -U postgres -d coindb -c "SELECT * FROM anomaly_log LIMIT 10;"
+# 코인별 임계값
+docker exec -it postgres psql -U postgres -d coindb -c "SELECT * FROM anomaly_threshold;"
 ```
 
 ---
@@ -270,3 +295,31 @@ LIMIT 1
 ```
 
 이상 탐지 로직을 별도 프로세스로 분리하지 않고 `foreachBatch` 안에 통합한 이유는, 분리할 경우 폴링 주기 관리 / 중복 탐지 방지 / 프로세스 동기화 문제가 생기기 때문임. 이 규모에서는 `foreachBatch` 안에서 저장 직후 바로 처리하는 것이 더 단순하고 안전함.
+
+---
+
+### 8. 이상 탐지 고정 임계값 문제
+
+**문제**
+
+고정 3% 임계값을 모든 코인에 적용하면 변동성이 작은 BTC는 이상을 못 잡고, 변동성이 큰 DOGE는 알람이 과도하게 발생함.
+
+**원인**
+
+코인마다 변동성이 달라 동일한 임계값을 적용하면 코인별 특성을 반영하지 못함.
+
+```
+KRW-BTC  → 변동성 작음, 0.1%만 변해도 이상
+KRW-DOGE → 변동성 큼, 1%는 정상 범위
+```
+
+**해결**
+
+Airflow DAG로 매일 자정 코인별 최근 7일 데이터를 분석해 임계값을 재계산.
+
+```
+임계값 = 평균 변동률 + 3 * 표준편차
+→ 정규분포 기준 99.7% 범위 밖이면 이상으로 판단
+```
+
+계산된 임계값은 `anomaly_threshold` 테이블에 upsert하고, Spark Streaming에서 고정값 대신 DB에서 코인별 임계값을 조회해서 사용.
