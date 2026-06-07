@@ -15,6 +15,18 @@ CREATE TABLE IF NOT EXISTS ohlcv (
     UNIQUE (code, window_start)
 );
 
+-- 코인별 이상탐지 임계값 (Airflow가 매일 재계산해서 저장)
+CREATE TABLE IF NOT EXISTS anomaly_threshold (
+    id             SERIAL PRIMARY KEY,
+    code           VARCHAR(20)      NOT NULL,   -- 코인 종목
+    threshold      DOUBLE PRECISION NOT NULL,   -- 계산된 임계값 (%)
+    avg_change     DOUBLE PRECISION NOT NULL,   -- 최근 7일 변동률 평균
+    std_change     DOUBLE PRECISION NOT NULL,   -- 최근 7일 변동률 표준편차
+    calculated_at  TIMESTAMP        DEFAULT NOW(),
+
+    UNIQUE (code)  -- 코인당 최신 임계값 하나만 유지
+);
+
 CREATE TABLE IF NOT EXISTS anomaly_log (
     id           SERIAL PRIMARY KEY,
     code         VARCHAR(20)      NOT NULL,

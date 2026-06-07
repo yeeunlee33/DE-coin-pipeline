@@ -5,15 +5,18 @@ import psycopg2
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import col, from_json, from_unixtime
 
-from anomaly_detection import calculate_change_rate, is_anomaly
+from anomaly_detection import calculate_change_rate, get_threshold, is_anomaly
 from schemas import TRADE_SCHEMA
 from window_aggregation import aggregate_ohlcv
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
 # 텔레그램 봇 설정 (환경변수로 관리 — 코드에 직접 넣지 말 것)
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID", "")
+from dotenv import load_dotenv
+load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
+
+TELEGRAM_BOT_TOKEN = os.getenv("telegram_token", "")
+TELEGRAM_CHAT_ID   = os.getenv("telegram_cht_id", "")
 
 
 def send_telegram_alert(code: str, close: float, change_rate: float) -> None:
@@ -212,8 +215,9 @@ def main():
             prev_close = result[0] if result else None  # 첫 번째 분봉이면 None
 
             change_rate = calculate_change_rate(r.close, prev_close)
+            threshold   = get_threshold(cur, r.code)  # 코인별 임계값 조회
 
-            if is_anomaly(change_rate):
+            if is_anomaly(change_rate, threshold):
                 cur.execute(anomaly_sql, (
                     r.code, r.window_start, r.window_end,
                     r.open, r.high, r.low, r.close,

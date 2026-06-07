@@ -46,6 +46,80 @@ services:
       - postgres-data:/var/lib/postgresql/data
       - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql  # 컨테이너 첫 시작 시 자동 실행(볼륨 마운트)
 
+  grafana:
+    image: grafana/grafana
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    volumes:
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      - postgres
+
+  # Airflow 전용 DB (coindb와 분리)
+  airflow-postgres:
+    image: postgres:15
+    container_name: airflow-postgres
+    environment:
+      POSTGRES_DB: airflow
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+    volumes:
+      - airflow-postgres-data:/var/lib/postgresql/data
+
+  # Airflow 초기화 (최초 1회 DB 스키마 생성 + admin 계정 생성)
+  airflow-init:
+    image: apache/airflow:2.9.1
+    container_name: airflow-init
+    depends_on:
+      - airflow-postgres
+    environment:
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@airflow-postgres/airflow
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"   # 예제 DAG 비활성화
+    entrypoint: >
+      bash -c "airflow db migrate && airflow users create
+      --username admin --password admin
+      --firstname admin --lastname admin
+      --role Admin --email admin@example.com"
+
+  # Airflow 스케줄러 (DAG 실행 타이밍 관리)
+  airflow-scheduler:
+    image: apache/airflow:2.9.1
+    container_name: airflow-scheduler
+    depends_on:
+      - airflow-postgres
+      - airflow-init
+    environment:
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@airflow-postgres/airflow
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags   # DAG 파일 마운트
+    command: scheduler
+
+  # Airflow 웹서버 (UI, localhost:8081)
+  airflow-webserver:
+    image: apache/airflow:2.9.1              # airflow가 설치된 공식 이미지
+    container_name: airflow-webserver        # 컨테이너 이름
+    depends_on:
+      - airflow-postgres                     # airflow-postgres 뜬 후 시작
+      - airflow-init                         # airflow-init 완료 후 시작 (DB 초기화 보장)
+    environment:
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@airflow-postgres/airflow
+      # airflow-postgres에 연결하는 주소
+      # 형식: postgresql+psycopg2://유저:비밀번호@호스트/DB이름
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"  # 기본 예제 DAG 비활성화
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags     # 내 DAG 파일 → 컨테이너 안으로 마운트
+    ports:
+      - "8081:8080"                          # 컨테이너 내부 8080 → 내 PC 8081로 연결
+                                             # kafka-ui가 8080 쓰고 있어서 8081로 변경
+    command: webserver                       # 컨테이너 안에서 "airflow webserver" 실행
+
 # services 밖으로 빠져나와야 함
 volumes:
   postgres-data:
+  grafana-data:
+  airflow-postgres-data:
