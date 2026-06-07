@@ -56,18 +56,12 @@ KAFKA_TOPIC             = os.getenv("KAFKA_TOPIC", "upbit-trades")
 CHECKPOINT_DIR          = os.getenv("CHECKPOINT_DIR", "C:/tmp/spark-checkpoint")
 
 # ── PostgreSQL 설정 ────────────────────────────────────────
-PG_URL  = "jdbc:postgresql://localhost:5432/coindb"
-PG_PROPS = {
-    "user":   "postgres",
-    "password": "password",
-    "driver": "org.postgresql.Driver",
-}
 PG_CONN = {
-    "host":     "localhost",
-    "port":     5432,
-    "dbname":   "coindb",
-    "user":     "postgres",
-    "password": "password",
+    "host":     os.getenv("POSTGRES_HOST", "localhost"),
+    "port":     int(os.getenv("POSTGRES_PORT", 5432)),
+    "dbname":   os.getenv("POSTGRES_DB", "coindb"),
+    "user":     os.getenv("POSTGRES_USER", "postgres"),
+    "password": os.getenv("POSTGRES_PASSWORD", ""),
 }
 
 

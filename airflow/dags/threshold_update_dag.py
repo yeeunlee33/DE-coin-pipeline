@@ -9,17 +9,20 @@
 
 from datetime import datetime, timedelta
 
+import os
+
 import psycopg2
 from airflow import DAG
 from airflow.operators.python import PythonOperator
 
 # ── PostgreSQL 연결 설정 ───────────────────────────────────────
+# Airflow 컨테이너는 도커 내부에서 실행되므로 host는 컨테이너 이름 사용
 PG_CONN = {
-    "host":     "postgres",   # 도커 내부에서는 컨테이너 이름으로 접근
-    "port":     5432,
-    "dbname":   "coindb",
-    "user":     "postgres",
-    "password": "password",
+    "host":     os.getenv("POSTGRES_HOST", "postgres"),
+    "port":     int(os.getenv("POSTGRES_PORT", 5432)),
+    "dbname":   os.getenv("POSTGRES_DB", "coindb"),
+    "user":     os.getenv("POSTGRES_USER", "postgres"),
+    "password": os.getenv("POSTGRES_PASSWORD", ""),
 }
 
 COINS = [
