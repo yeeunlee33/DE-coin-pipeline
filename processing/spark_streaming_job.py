@@ -191,6 +191,14 @@ def main():
                  volume, trade_count, prev_close, change_rate)
             VALUES
                 (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (code, window_start)
+            DO UPDATE SET
+                close       = EXCLUDED.close,
+                high        = EXCLUDED.high,
+                low         = EXCLUDED.low,
+                volume      = EXCLUDED.volume,
+                trade_count = EXCLUDED.trade_count,
+                change_rate = EXCLUDED.change_rate
         """
         # 직전 분봉 close를 DB에서 조회하는 쿼리
         # window_start보다 이전 분봉 중 가장 최신 것을 가져옴
@@ -212,13 +220,25 @@ def main():
             threshold   = get_threshold(cur, r.code)  # 코인별 임계값 조회
 
             if is_anomaly(change_rate, threshold):
+                # 같은 (code, window_start) 조합이 anomaly_log에 이미 있는지 확인
+                # update 모드에서 체결될 때마다 foreachBatch가 실행되므로
+                # 같은 분봉에서 중복 알람 방지
+                cur.execute(
+                    "SELECT 1 FROM anomaly_log WHERE code = %s AND window_start = %s",
+                    (r.code, r.window_start)
+                )
+                already_logged = cur.fetchone() is not None
+
                 cur.execute(anomaly_sql, (
                     r.code, r.window_start, r.window_end,
                     r.open, r.high, r.low, r.close,
                     r.volume, r.trade_count,
                     prev_close, change_rate,
                 ))
-                anomalies.append((r.code, r.close, change_rate))
+
+                # 이미 기록된 분봉이면 텔레그램 전송 스킵
+                if not already_logged:
+                    anomalies.append((r.code, r.close, change_rate))
 
         conn.commit()
         cur.close()

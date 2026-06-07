@@ -40,5 +40,7 @@ CREATE TABLE IF NOT EXISTS anomaly_log (
     trade_count  BIGINT           NOT NULL,
     prev_close   DOUBLE PRECISION NOT NULL,  -- 직전 분봉 종가
     change_rate  DOUBLE PRECISION NOT NULL,  -- 변동률 (%)
-    detected_at  TIMESTAMP        DEFAULT NOW()
+    detected_at  TIMESTAMP        DEFAULT NOW(),
+
+    UNIQUE (code, window_start)  -- 분봉당 이상 탐지 기록 하나만 유지
 );
