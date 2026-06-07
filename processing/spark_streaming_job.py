@@ -9,7 +9,14 @@ from anomaly_detection import calculate_change_rate, get_threshold, is_anomaly
 from schemas import TRADE_SCHEMA
 from window_aggregation import aggregate_ohlcv
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[
+        logging.StreamHandler(),                           # 터미널 출력
+        logging.FileHandler("logs/spark_streaming.log"),  # 파일 저장
+    ]
+)
 
 # 텔레그램 봇 설정 (환경변수로 관리 — 코드에 직접 넣지 말 것)
 from dotenv import load_dotenv
@@ -109,20 +116,20 @@ def parse_kafka_data(raw_df):
 
 
 def main():
-    print("=" * 50)
-    print(" 코인 스트리밍 Spark Job 시작")
-    print("=" * 50)
+    logging.info("=" * 50)
+    logging.info(" 코인 스트리밍 Spark Job 시작")
+    logging.info("=" * 50)
 
     # 1. Spark 세션 생성
-    print("[1] Spark 세션 생성 중...")
+    logging.info("[1] Spark 세션 생성 중...")
     spark = create_spark_session()
-    spark.sparkContext.setLogLevel("WARN")  # 불필요한 로그 줄이기
-    print("[2] Spark 세션 생성 완료\n")
+    spark.sparkContext.setLogLevel("WARN")
+    logging.info("[2] Spark 세션 생성 완료")
 
     # 2. Kafka에서 읽기
-    print("[3] Kafka 연결 중...")
+    logging.info("[3] Kafka 연결 중...")
     raw_df = read_from_kafka(spark)
-    print("[4] Kafka 연결 완료\n")
+    logging.info("[4] Kafka 연결 완료")
 
     # 3. JSON 파싱
     parsed_df = parse_kafka_data(raw_df)
@@ -158,7 +165,13 @@ def main():
         if not rows:
             return
 
-        conn = psycopg2.connect(**PG_CONN)
+        logging.info(f"[batch {batch_id}] {len(rows)}개 분봉 처리 시작")
+
+        try:
+            conn = psycopg2.connect(**PG_CONN)
+        except Exception as e:
+            logging.error(f"[batch {batch_id}] PostgreSQL 연결 실패: {e}")
+            raise
         cur = conn.cursor()
 
         # ── 1) ohlcv upsert ───────────────────────────────────────────────
@@ -183,6 +196,7 @@ def main():
             for r in rows
         ])
         conn.commit()  # 저장은 여기서 무조건 확정
+        logging.info(f"[batch {batch_id}] ohlcv {len(rows)}개 저장 완료")
 
         # ── 2) 이상 탐지 + anomaly_log 저장 ──────────────────────────────
         anomaly_sql = """
@@ -238,6 +252,7 @@ def main():
 
                 # 이미 기록된 분봉이면 텔레그램 전송 스킵
                 if not already_logged:
+                    logging.info(f"[이상 탐지] {r.code} | 변동률: {change_rate:+.2f}% | 임계값: {threshold:.2f}%")
                     anomalies.append((r.code, r.close, change_rate))
 
         conn.commit()
