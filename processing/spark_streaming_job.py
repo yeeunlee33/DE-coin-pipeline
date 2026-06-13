@@ -92,7 +92,7 @@ def read_from_kafka(spark: SparkSession):
         .option("kafka.bootstrap.servers", KAFKA_BOOTSTRAP_SERVERS) \
         .option("subscribe", KAFKA_TOPIC) \
         .option("startingOffsets", "latest") \
-        .option("failOnDataLoss", "false") \  # Kafka retention으로 offset 삭제돼도 잡 죽지 않음
+        .option("failOnDataLoss", "false") \
         .load()
 
 
