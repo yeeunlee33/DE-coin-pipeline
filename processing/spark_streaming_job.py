@@ -10,7 +10,7 @@ from schemas import TRADE_SCHEMA
 from window_aggregation import aggregate_ohlcv
 
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.INFO, #info 이상 레벨만 출력
     format="%(asctime)s [%(levelname)s] %(message)s",
     handlers=[
         logging.StreamHandler(),                           # 터미널 출력
@@ -92,6 +92,7 @@ def read_from_kafka(spark: SparkSession):
         .option("kafka.bootstrap.servers", KAFKA_BOOTSTRAP_SERVERS) \
         .option("subscribe", KAFKA_TOPIC) \
         .option("startingOffsets", "latest") \
+        .option("failOnDataLoss", "false") \  # Kafka retention으로 offset 삭제돼도 잡 죽지 않음
         .load()
 
 

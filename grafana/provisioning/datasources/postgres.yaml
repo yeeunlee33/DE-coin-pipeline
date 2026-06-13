@@ -1,0 +1,17 @@
+apiVersion: 1
+
+datasources:
+  - name: PostgreSQL
+    uid: postgres-coindb
+    type: postgres
+    url: postgres:5432
+    user: postgres
+    secureJsonData:
+      password: password
+    jsonData:
+      database: coindb
+      sslmode: disable
+      postgresVersion: 1500
+      timescaledb: false
+    isDefault: true
+    editable: true

@@ -1,0 +1,150 @@
+{
+  "__inputs": [],
+  "__requires": [],
+  "annotations": { "list": [] },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "id": 1,
+      "title": "코인별 종가 (1분봉)",
+      "type": "timeseries",
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 0 },
+      "datasource": { "type": "postgres", "uid": "postgres-coindb" },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 5,
+            "showPoints": "never"
+          },
+          "unit": "currencyKRW"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom" },
+        "tooltip": { "mode": "multi" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "postgres-coindb" },
+          "rawSql": "SELECT\n  window_start AS \"time\",\n  close AS \"value\",\n  code AS \"metric\"\nFROM ohlcv\nWHERE window_start BETWEEN $__timeFrom()::timestamp AND $__timeTo()::timestamp\nORDER BY window_start",
+          "format": "time_series",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "코인별 거래량 (1분봉)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 9 },
+      "datasource": { "type": "postgres", "uid": "postgres-coindb" },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 20,
+            "drawStyle": "bars"
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom" },
+        "tooltip": { "mode": "multi" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "postgres-coindb" },
+          "rawSql": "SELECT\n  window_start AS \"time\",\n  volume AS \"value\",\n  code AS \"metric\"\nFROM ohlcv\nWHERE window_start BETWEEN $__timeFrom()::timestamp AND $__timeTo()::timestamp\nORDER BY window_start",
+          "format": "time_series",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "이상탐지 발생 목록",
+      "type": "table",
+      "gridPos": { "h": 8, "w": 16, "x": 0, "y": 17 },
+      "datasource": { "type": "postgres", "uid": "postgres-coindb" },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "change_rate" },
+            "properties": [
+              { "id": "unit", "value": "percent" },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    { "color": "green", "value": null },
+                    { "color": "red", "value": 3 }
+                  ]
+                }
+              },
+              { "id": "custom.displayMode", "value": "color-background" }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "sortBy": [{ "displayName": "window_start", "desc": true }]
+      },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "postgres-coindb" },
+          "rawSql": "SELECT\n  detected_at,\n  code,\n  window_start,\n  close,\n  prev_close,\n  ROUND(change_rate::numeric, 2) AS change_rate\nFROM anomaly_log\nORDER BY detected_at DESC\nLIMIT 50",
+          "format": "table",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "코인별 이상탐지 임계값",
+      "type": "table",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 17 },
+      "datasource": { "type": "postgres", "uid": "postgres-coindb" },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "threshold" },
+            "properties": [
+              { "id": "unit", "value": "percent" },
+              { "id": "decimals", "value": 2 }
+            ]
+          }
+        ]
+      },
+      "options": {},
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "postgres-coindb" },
+          "rawSql": "SELECT\n  code,\n  ROUND(threshold::numeric, 2)    AS threshold,\n  ROUND(avg_change::numeric, 2)   AS avg_change,\n  ROUND(std_change::numeric, 2)   AS std_change,\n  calculated_at\nFROM anomaly_threshold\nORDER BY code",
+          "format": "table",
+          "refId": "A"
+        }
+      ]
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 38,
+  "tags": ["coin", "realtime"],
+  "templating": { "list": [] },
+  "time": { "from": "now-1h", "to": "now" },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "Coin Pipeline Dashboard",
+  "uid": "coin-pipeline-v1",
+  "version": 1
+}

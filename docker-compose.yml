@@ -47,7 +47,7 @@ services:
       - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql  # 컨테이너 첫 시작 시 자동 실행(볼륨 마운트)
 
   grafana:
-    image: grafana/grafana
+    image: grafana/grafana:11.5.0
     container_name: grafana
     ports:
       - "3000:3000"
@@ -56,6 +56,8 @@ services:
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
     volumes:
       - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning   # datasource + dashboard 설정 자동 로드
+      - ./grafana/dashboards:/var/lib/grafana/dashboards   # 대시보드 JSON 파일
     depends_on:
       - postgres
 
